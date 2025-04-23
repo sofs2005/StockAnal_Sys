@@ -50,7 +50,10 @@ class NewsFetcher:
             today = datetime.now()
             for i in range(3):  # 检查今天和前两天的数据
                 date = today - timedelta(days=i)
-                filename = self.get_news_filename(date)
+                date_str = date.strftime('%Y%m%d')
+                # 直接构建文件名，避免使用get_news_filename方法
+                import os
+                filename = os.path.join(self.save_dir, f"news_{date_str}.json")
 
                 if os.path.exists(filename):
                     # 尝试不同的编码方式读取文件
@@ -178,8 +181,16 @@ class NewsFetcher:
                 logger.info(f"没有新的新闻数据需要保存 (共检查 {total_count} 条)")
                 return True
 
-            # 获取文件名
-            filename = self.get_news_filename()
+            # 直接构建文件名，避免使用get_news_filename方法
+            import os
+            date_str = now.strftime('%Y%m%d')
+            filename = os.path.join(self.save_dir, f"news_{date_str}.json")
+
+            # 确保目录存在
+            news_dir = os.path.dirname(filename)
+            if not os.path.exists(news_dir):
+                os.makedirs(news_dir, exist_ok=True)
+                logger.info(f"创建新闻目录: {news_dir}")
 
             # 如果文件已存在，则合并新旧数据
             if os.path.exists(filename):
@@ -235,16 +246,17 @@ class NewsFetcher:
 
             # 保存合并后的数据，使用自定义编码器处理日期
             try:
-                # 先尝试写入临时文件，成功后再替换原文件，避免写入过程中出错导致文件损坏
-                temp_filename = f"{filename}.temp"
-                with open(temp_filename, 'w', encoding='utf-8') as f:
+                # 确保目录存在
+                import os
+                news_dir = os.path.dirname(filename)
+                if not os.path.exists(news_dir):
+                    os.makedirs(news_dir, exist_ok=True)
+                    logger.info(f"创建新闻目录: {news_dir}")
+
+                # 直接写入文件，不使用临时文件
+                with open(filename, 'w', encoding='utf-8') as f:
                     json.dump(merged_news, f, ensure_ascii=False, indent=2, cls=DateEncoder)
 
-                # 如果写入成功，替换原文件
-                if os.path.exists(filename):
-                    os.replace(temp_filename, filename)
-                else:
-                    os.rename(temp_filename, filename)
                 logger.info(f"成功保存新闻数据到文件: {filename}")
             except Exception as e:
                 logger.error(f"保存新闻数据到文件 {filename} 时出错: {str(e)}")
@@ -272,7 +284,9 @@ class NewsFetcher:
         for i in range(days):
             date = today - timedelta(days=i)
             date_str = date.strftime('%Y%m%d')
-            filename = self.get_news_filename(date)
+            # 直接构建文件名，避免使用get_news_filename方法
+            import os
+            filename = os.path.join(self.save_dir, f"news_{date_str}.json")
 
             if os.path.exists(filename):
                 file_loaded = False
@@ -292,13 +306,9 @@ class NewsFetcher:
                             # 如果文件不是UTF-8编码，尝试将其转换为UTF-8并保存
                             if encoding != 'utf-8' and encoding != 'utf-8-sig':
                                 try:
-                                    # 先写入临时文件
-                                    temp_filename = f"{filename}.temp"
-                                    with open(temp_filename, 'w', encoding='utf-8') as tf:
+                                    # 直接写入文件，不使用临时文件
+                                    with open(filename, 'w', encoding='utf-8') as tf:
                                         json.dump(data, tf, ensure_ascii=False, indent=2)
-
-                                    # 替换原文件
-                                    os.replace(temp_filename, filename)
                                     logger.info(f"已将文件 {filename} 从 {encoding} 编码转换为 UTF-8 编码")
                                 except Exception as e:
                                     logger.error(f"转换文件编码时出错: {str(e)}")
@@ -428,13 +438,9 @@ def clean_corrupted_news_files():
                         # 如果文件不是UTF-8编码，尝试将其转换为UTF-8并保存
                         if encoding != 'utf-8' and encoding != 'utf-8-sig':
                             try:
-                                # 先写入临时文件
-                                temp_filename = f"{file_path}.temp"
-                                with open(temp_filename, 'w', encoding='utf-8') as tf:
+                                # 直接写入文件，不使用临时文件
+                                with open(file_path, 'w', encoding='utf-8') as tf:
                                     json.dump(json_data, tf, ensure_ascii=False, indent=2)
-
-                                # 替换原文件
-                                os.replace(temp_filename, file_path)
                                 logger.info(f"已将文件 {file_path} 从 {encoding} 编码转换为 UTF-8 编码")
                             except Exception as e:
                                 logger.error(f"转换文件编码时出错: {str(e)}")
