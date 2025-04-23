@@ -10,6 +10,8 @@ import json
 import logging
 import time
 import hashlib
+import shutil
+import glob
 from datetime import datetime, timedelta, date
 import akshare as ak
 import pandas as pd
@@ -51,18 +53,30 @@ class NewsFetcher:
                 filename = self.get_news_filename(date)
 
                 if os.path.exists(filename):
-                    with open(filename, 'r', encoding='utf-8') as f:
+                    # 尝试不同的编码方式读取文件
+                    encodings_to_try = ['utf-8', 'gbk', 'gb2312', 'latin1']
+                    for encoding in encodings_to_try:
                         try:
-                            news_data = json.load(f)
-                            for item in news_data:
-                                # 如果有哈希字段就直接使用，否则计算新的哈希
-                                if 'hash' in item:
-                                    self.news_hashes.add(item['hash'])
-                                else:
-                                    content_hash = self._calculate_hash(item['content'])
-                                    self.news_hashes.add(content_hash)
+                            with open(filename, 'r', encoding=encoding) as f:
+                                news_data = json.load(f)
+                                for item in news_data:
+                                    # 如果有哈希字段就直接使用，否则计算新的哈希
+                                    if 'hash' in item:
+                                        self.news_hashes.add(item['hash'])
+                                    else:
+                                        content_hash = self._calculate_hash(item['content'])
+                                        self.news_hashes.add(content_hash)
+                                logger.info(f"使用 {encoding} 编码成功加载文件 {filename}")
+                                break  # 成功读取后跳出循环
+                        except UnicodeDecodeError:
+                            logger.warning(f"使用 {encoding} 编码读取文件 {filename} 失败，尝试其他编码")
+                            continue
                         except json.JSONDecodeError:
-                            logger.warning(f"文件 {filename} 格式错误，跳过加载哈希值")
+                            logger.warning(f"文件 {filename} JSON格式错误，跳过加载哈希值")
+                            break
+                        except Exception as e:
+                            logger.error(f"读取文件 {filename} 时出错: {str(e)}")
+                            break
 
             logger.info(f"已加载 {len(self.news_hashes)} 条新闻哈希值")
         except Exception as e:
@@ -78,10 +92,18 @@ class NewsFetcher:
 
     def get_news_filename(self, date=None):
         """获取指定日期的新闻文件名"""
+        # 导入全局模块
+        import os
+
         if date is None:
             date = datetime.now().strftime('%Y%m%d')
         else:
             date = date.strftime('%Y%m%d')
+
+        # 确保目录存在
+        if not os.path.exists(self.save_dir):
+            os.makedirs(self.save_dir, exist_ok=True)
+
         return os.path.join(self.save_dir, f"news_{date}.json")
 
     def fetch_and_save(self):
@@ -161,23 +183,73 @@ class NewsFetcher:
 
             # 如果文件已存在，则合并新旧数据
             if os.path.exists(filename):
-                with open(filename, 'r', encoding='utf-8') as f:
+                existing_data = []
+                file_read_success = False
+
+                # 尝试不同的编码方式读取文件
+                encodings_to_try = ['utf-8', 'utf-8-sig', 'gbk', 'gb2312', 'latin1']
+                for encoding in encodings_to_try:
                     try:
-                        existing_data = json.load(f)
-                        # 合并数据，已经确保news_list中的内容都是新的
-                        merged_news = existing_data + news_list
-                        # 按时间排序
-                        merged_news.sort(key=lambda x: x['datetime'], reverse=True)
+                        with open(filename, 'r', encoding=encoding) as f:
+                            file_content = f.read()
+                            # 尝试解析JSON
+                            existing_data = json.loads(file_content)
+                            file_read_success = True
+                            logger.info(f"成功使用 {encoding} 编码读取文件 {filename}")
+
+                            # 如果文件不是UTF-8编码，尝试将其转换为UTF-8并保存
+                            if encoding != 'utf-8' and encoding != 'utf-8-sig':
+                                logger.info(f"文件 {filename} 使用的是 {encoding} 编码，将转换为 UTF-8")
+                            break
+                    except UnicodeDecodeError:
+                        logger.warning(f"使用 {encoding} 编码读取文件 {filename} 失败，尝试其他编码")
+                        continue
                     except json.JSONDecodeError:
-                        logger.warning(f"文件 {filename} 格式错误，使用新数据替换")
-                        merged_news = sorted(news_list, key=lambda x: x['datetime'], reverse=True)
+                        logger.warning(f"文件 {filename} JSON格式错误，使用新数据替换")
+                        break
+                    except Exception as e:
+                        logger.error(f"读取文件 {filename} 时出现未知错误: {str(e)}")
+                        break
+
+                # 如果所有编码方式都失败，尝试备份并重建文件
+                if not file_read_success:
+                    try:
+                        # 创建备份文件
+                        backup_filename = f"{filename}.corrupted.{int(time.time())}"
+                        if os.path.exists(filename):
+                            shutil.copy2(filename, backup_filename)
+                            logger.info(f"已创建损坏文件备份: {backup_filename}")
+                    except Exception as e:
+                        logger.error(f"创建备份文件时出错: {str(e)}")
+
+                    # 使用新数据
+                    existing_data = []
+
+                # 合并数据，已经确保news_list中的内容都是新的
+                merged_news = existing_data + news_list
+                # 按时间排序
+                merged_news.sort(key=lambda x: x.get('datetime', ''), reverse=True)
             else:
                 # 如果文件不存在，直接使用新数据
-                merged_news = sorted(news_list, key=lambda x: x['datetime'], reverse=True)
+                merged_news = sorted(news_list, key=lambda x: x.get('datetime', ''), reverse=True)
 
             # 保存合并后的数据，使用自定义编码器处理日期
-            with open(filename, 'w', encoding='utf-8') as f:
-                json.dump(merged_news, f, ensure_ascii=False, indent=2, cls=DateEncoder)
+            try:
+                # 先尝试写入临时文件，成功后再替换原文件，避免写入过程中出错导致文件损坏
+                temp_filename = f"{filename}.temp"
+                with open(temp_filename, 'w', encoding='utf-8') as f:
+                    json.dump(merged_news, f, ensure_ascii=False, indent=2, cls=DateEncoder)
+
+                # 如果写入成功，替换原文件
+                if os.path.exists(filename):
+                    os.replace(temp_filename, filename)
+                else:
+                    os.rename(temp_filename, filename)
+                logger.info(f"成功保存新闻数据到文件: {filename}")
+            except Exception as e:
+                logger.error(f"保存新闻数据到文件 {filename} 时出错: {str(e)}")
+                import traceback
+                logger.error(traceback.format_exc())
 
             logger.info(f"成功保存 {new_count} 条新闻数据 (共检查 {total_count} 条，过滤重复 {total_count - new_count} 条)")
             self.last_fetch_time = now
@@ -203,14 +275,61 @@ class NewsFetcher:
             filename = self.get_news_filename(date)
 
             if os.path.exists(filename):
-                try:
-                    with open(filename, 'r', encoding='utf-8') as f:
-                        data = json.load(f)
-                        news_data.extend(data)
-                        processed_dates.append(date_str)
-                        logger.info(f"已加载 {date_str} 新闻数据 {len(data)} 条")
-                except Exception as e:
-                    logger.error(f"读取文件 {filename} 时出错: {str(e)}")
+                file_loaded = False
+                # 尝试不同的编码方式读取文件
+                encodings_to_try = ['utf-8', 'utf-8-sig', 'gbk', 'gb2312', 'latin1']
+                for encoding in encodings_to_try:
+                    try:
+                        with open(filename, 'r', encoding=encoding) as f:
+                            file_content = f.read()
+                            # 尝试解析JSON
+                            data = json.loads(file_content)
+                            news_data.extend(data)
+                            processed_dates.append(date_str)
+                            logger.info(f"已使用 {encoding} 编码加载 {date_str} 新闻数据 {len(data)} 条")
+                            file_loaded = True
+
+                            # 如果文件不是UTF-8编码，尝试将其转换为UTF-8并保存
+                            if encoding != 'utf-8' and encoding != 'utf-8-sig':
+                                try:
+                                    # 先写入临时文件
+                                    temp_filename = f"{filename}.temp"
+                                    with open(temp_filename, 'w', encoding='utf-8') as tf:
+                                        json.dump(data, tf, ensure_ascii=False, indent=2)
+
+                                    # 替换原文件
+                                    os.replace(temp_filename, filename)
+                                    logger.info(f"已将文件 {filename} 从 {encoding} 编码转换为 UTF-8 编码")
+                                except Exception as e:
+                                    logger.error(f"转换文件编码时出错: {str(e)}")
+
+                            break
+                    except UnicodeDecodeError:
+                        logger.warning(f"使用 {encoding} 编码读取文件 {filename} 失败，尝试其他编码")
+                        continue
+                    except json.JSONDecodeError:
+                        logger.warning(f"文件 {filename} JSON格式错误，跳过该文件")
+                        break
+                    except Exception as e:
+                        logger.error(f"读取文件 {filename} 时出现未知错误: {str(e)}")
+                        break
+
+                # 如果所有编码方式都失败，尝试备份损坏文件
+                if not file_loaded:
+                    try:
+                        # 创建备份文件
+                        backup_filename = f"{filename}.corrupted.{int(time.time())}"
+                        shutil.copy2(filename, backup_filename)
+                        logger.info(f"已创建损坏文件备份: {backup_filename}")
+
+                        # 创建空文件替换损坏文件
+                        with open(filename, 'w', encoding='utf-8') as f:
+                            json.dump([], f, ensure_ascii=False, indent=2)
+                        logger.info(f"已创建空文件替换损坏文件: {filename}")
+                    except Exception as e:
+                        logger.error(f"创建备份文件时出错: {str(e)}")
+
+                    logger.error(f"无法读取文件 {filename}，跳过该文件")
             else:
                 logger.warning(f"日期 {date_str} 的新闻文件不存在: {filename}")
 
@@ -277,6 +396,81 @@ def start_news_scheduler():
     scheduler_thread.start()
     logger.info("新闻获取定时任务已启动")
 
+def clean_corrupted_news_files():
+    """清理损坏的新闻文件，并创建备份"""
+
+    logger.info("开始清理损坏的新闻文件")
+
+    # 获取新闻文件目录
+    news_dir = "data/news"
+    if not os.path.exists(news_dir):
+        os.makedirs(news_dir, exist_ok=True)
+        logger.info(f"创建新闻目录: {news_dir}")
+        return
+
+    # 获取所有新闻文件
+    news_files = glob.glob(os.path.join(news_dir, "news_*.json"))
+    logger.info(f"找到 {len(news_files)} 个新闻文件")
+
+    for file_path in news_files:
+        try:
+            # 尝试读取文件
+            file_valid = False
+            for encoding in ['utf-8', 'utf-8-sig', 'gbk', 'gb2312', 'latin1']:
+                try:
+                    with open(file_path, 'r', encoding=encoding) as f:
+                        file_content = f.read()
+                        # 尝试解析JSON
+                        json_data = json.loads(file_content)
+                        file_valid = True
+                        logger.info(f"文件 {file_path} 可以使用 {encoding} 编码正常读取")
+
+                        # 如果文件不是UTF-8编码，尝试将其转换为UTF-8并保存
+                        if encoding != 'utf-8' and encoding != 'utf-8-sig':
+                            try:
+                                # 先写入临时文件
+                                temp_filename = f"{file_path}.temp"
+                                with open(temp_filename, 'w', encoding='utf-8') as tf:
+                                    json.dump(json_data, tf, ensure_ascii=False, indent=2)
+
+                                # 替换原文件
+                                os.replace(temp_filename, file_path)
+                                logger.info(f"已将文件 {file_path} 从 {encoding} 编码转换为 UTF-8 编码")
+                            except Exception as e:
+                                logger.error(f"转换文件编码时出错: {str(e)}")
+                        break
+                except UnicodeDecodeError:
+                    logger.warning(f"使用 {encoding} 编码读取文件 {file_path} 失败，尝试其他编码")
+                    continue
+                except json.JSONDecodeError:
+                    logger.warning(f"文件 {file_path} JSON格式错误")
+                    break
+                except Exception as e:
+                    logger.error(f"读取文件 {file_path} 时出错: {str(e)}")
+                    break
+
+            # 如果文件无法读取，创建备份并删除
+            if not file_valid:
+                # 创建备份
+                backup_path = f"{file_path}.corrupted.{int(time.time())}"
+                shutil.copy2(file_path, backup_path)
+
+                # 删除原文件
+                os.remove(file_path)
+
+                # 创建空文件
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    json.dump([], f, ensure_ascii=False)
+
+                logger.info(f"清理了损坏的文件 {file_path}，备份为 {backup_path}")
+        except Exception as e:
+            logger.error(f"处理文件 {file_path} 时出错: {str(e)}")
+
+    logger.info("清理损坏文件完成")
+
 # 初始获取一次数据
 if __name__ == "__main__":
+    # 先清理损坏文件
+    clean_corrupted_news_files()
+    # 然后获取新闻
     fetch_news_task()
